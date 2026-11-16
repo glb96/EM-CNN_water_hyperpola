@@ -30,4 +30,4 @@ Additional data and the final trained `.keras` model will be made available very
 
 For questions, help running the code, or requests for additional data, [open an issue on GitHub](https://github.com/glb96/EM-CNN_water_hyperpola/issues) or contact [Guillaume Le Breton](https://github.com/glb96).
 
-Email: **[address to be added]**.
+Email: **guillaume.le-breton@ube.fr**.

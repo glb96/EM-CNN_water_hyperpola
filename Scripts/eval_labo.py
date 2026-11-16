@@ -92,7 +92,7 @@ def normalized_rmse(true, pred):
 def check_targets(actual, expected):
     if actual.shape != expected.shape or not np.allclose(actual, expected, atol=2e-5, rtol=2e-6):
         raise ValueError('Validation targets do not match rotation metadata: check source valid.p, '
-                         'sample order, augmentation, ratio and fixed beta constants in eval.py.')
+                         'sample order, augmentation, ratio and the supplied beta reference constants.')
 
 
 def load_rotations(path):
@@ -176,17 +176,17 @@ def load_beta_reference(path):
     return mean, std
 
 
-def main():
+def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--model', default='./models/best-model.keras')
     p.add_argument('--dataset', default='../valid_CNN_small.p')
     p.add_argument('--rotations', default='valid_rot_aug.p', help='Augmented rotation pickle')
-    p.add_argument('--eval-reference', default=str(Path(__file__).resolve().with_name('eval.py')),
-                   help='File defining the fixed beta constants; default: eval.py beside this script')
+    p.add_argument('--eval-reference', default=str(Path(__file__).resolve().with_name('prepare_data_set_CNN_new.py')),
+                   help='File defining beta_mean_ref and beta_std_ref; use the saved preparation constants')
     p.add_argument('--batch-size', type=int, default=128)
     p.add_argument('--samples', choices=['all', 'original'], default='all')
     p.add_argument('--output', default='validation_labo')
-    args = p.parse_args()
+    args = p.parse_args(argv)
     if args.batch_size < 1:
         p.error('--batch-size must be positive')
     os.environ['KERAS_BACKEND'] = 'torch'
@@ -221,7 +221,7 @@ def main():
         targets.append(y.cpu().numpy().astype(np.float64)*std + mean)
     true_mol, pred_mol = np.concatenate(targets), np.concatenate(predictions)
     results, true_lab, pred_lab = evaluate_frames(true_mol, pred_mol, matrices[indices])
-    # Baseline: the saved molecular mean from eval.py, identical for all samples.
+    # Baseline: the saved molecular mean from the reference file, identical for all samples.
     # No mean is recomputed from validation labels for the baseline prediction.
     constant_mol = np.broadcast_to(mean, true_mol.shape).copy()
     constant_scores, _, constant_lab = evaluate_frames(true_mol, constant_mol, matrices[indices])
@@ -231,7 +231,7 @@ def main():
     }
     baseline_arrays = dict(constant_reference_mol=constant_mol,
                            constant_reference_lab=constant_lab)
-    print('\nconstant_reference = saved beta_mean_ref from eval.py (zero normalized output).')
+    print('\nconstant_reference = saved beta_mean_ref from the supplied reference file (zero normalized output).')
     for predictor, scores in [('ML', results)] + [(k, v['metrics']) for k, v in baselines.items()]:
         print(f'\n===== {predictor} =====')
         for name, m in scores.items():

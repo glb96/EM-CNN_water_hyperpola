@@ -1,34 +1,16 @@
-import importlib
-import numpy as np
-import sys
-import os 
-import pickle
-import time
-import psutil
-
+"""EM-CNN architecture and staged training (Keras with the PyTorch backend)."""
 import os
+from datetime import datetime
+from pathlib import Path
+
 os.environ['KERAS_BACKEND'] = 'torch'
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-
-import fidle
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import keras
-
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset, random_split
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from keras.layers import BatchNormalization
-from sklearn.metrics import mean_squared_error
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch_dtype = torch.float32
-
-
-###########################################################################
-##############          Others      #######################################
-###########################################################################
 
 class R2Score(keras.metrics.Metric):
     def __init__(self, name="r2", eps=1e-12, **kwargs):
@@ -143,140 +125,99 @@ def get_model_01(N_grid, N_beta):
 
 ###########################################################################
 
-name_train_set = "../train_CNN_small.p"
-train_dataset = torch.load(name_train_set)
-
-name_test_set = "../test_CNN_small.p"
-test_dataset = torch.load(name_test_set)
-
-def make_loaders(batch_size: int):
-    num_workers = 0
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True,
-        drop_last=False,
-        persistent_workers=(num_workers > 0),
-    )
-
-    val_loader = DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True,
-        drop_last=False,
-        persistent_workers=(num_workers > 0),
-    )
-    return train_loader, val_loader
-
-
-# Convert datasets to tensors (keeping everything in PyTorch)
-x0, y0 = train_dataset[0]  # un seul exemple
-                        
-N_grid = x0.shape[0:3]
-N_beta = y0.shape[0] if y0.ndim > 0 else 1
-
-print("N_grid=", N_grid)
-print("N_beta=", N_beta)
-
-
-###########################################################################
-
-run_dir = '.' 
-os.makedirs(run_dir + '/models', exist_ok=True)
-os.makedirs(run_dir + '/logs', exist_ok=True)
-
-
-tenseorboard_callback = TensorboardCallback(
-    log_dir=run_dir + "/logs/tb_" + fidle.Chrono.tag_now()
-)
-
-bestmodel_callback = keras.callbacks.ModelCheckpoint(
-    filepath=run_dir + "/models/best-model.keras",
-    monitor="val_loss",
-    mode="min",               
-    save_best_only=True,
-    verbose=1
-)
-
-savemodel_callback = keras.callbacks.ModelCheckpoint(
-    filepath=run_dir + "/models/{epoch:02d}.keras",
-    save_freq="epoch",
-    verbose=0
-)
-
-reduce_lr_callback = keras.callbacks.ReduceLROnPlateau(
-    monitor="val_loss",
-    mode="min",
-    factor=0.5,
-    patience=5,
-    min_lr=1e-6,
-    verbose=1
-)
-
-earlystop_callback = keras.callbacks.EarlyStopping(
-    monitor="val_loss",
-    mode="min",
-    patience=15,
-    restore_best_weights=True,   # <-- makes final model = best val_loss weights
-    verbose=1
-)
-
-callbacks = [
-    tenseorboard_callback,
-    bestmodel_callback,
-    savemodel_callback,
-    reduce_lr_callback,
-    earlystop_callback
-]
-
-
-###########################################################################
-
-model = get_model_01(N_grid, N_beta)
-model.summary()
-
-###########################################################################
-
-# ---- Train
-epochs = 200
-batch_size = 128
-learning_rate = 1e-3
-optimizer = keras.optimizers.Adam(learning_rate=learning_rate, clipnorm=1)
-
-model.compile(optimizer=optimizer, loss="mse", metrics=["mae", R2Score()])
-
-schedules = [
+DEFAULT_SCHEDULE = [
     {"epochs": 20, "batch_size": 256, "lr": 1e-3},
     {"epochs": 15, "batch_size": 64, "lr": 5e-4},
-    {"epochs": 30, "batch_size": 128,  "lr": 2.5e-4},
-    {"epochs": 30, "batch_size": 64,  "lr": 1e-4},
-    {"epochs": 75, "batch_size": 128,  "lr": 1e-4},
+    {"epochs": 30, "batch_size": 128, "lr": 2.5e-4},
+    {"epochs": 30, "batch_size": 64, "lr": 1e-4},
+    {"epochs": 75, "batch_size": 128, "lr": 1e-4},
 ]
 
-for s in schedules:
-    batch_size = s["batch_size"]
-    epochs = s["epochs"]
-    lr = s["lr"]
-    train_loader, val_loader = make_loaders(batch_size)
-    model.optimizer.learning_rate.assign(lr)
-    model.fit(
-        train_loader,
-        epochs=epochs,
-        validation_data=val_loader,
-        callbacks=callbacks,
-        shuffle=False
+
+def train_model(*, train_path, test_path, run_dir, schedule=None,
+                shuffle_train=False, seed=42, clipnorm=1.0,
+                reduce_lr_factor=0.5, reduce_lr_patience=5, min_lr=1e-6,
+                early_stopping_patience=15, save_each_epoch=True):
+    """Train with the original architecture, normalization and phase settings.
+
+    The test split monitors optimization; final assessment uses valid elsewhere.
+    Each phase retains the original fit/early-stopping behavior. Epoch numbering
+    is cumulative so per-epoch files and TensorBoard steps do not overlap.
+    """
+    schedule = DEFAULT_SCHEDULE if schedule is None else schedule
+    if not schedule or any(s['epochs'] < 1 or s['batch_size'] < 1 or s['lr'] <= 0
+                           for s in schedule):
+        raise ValueError("Schedule must contain positive epochs, batch_size and lr")
+    keras.utils.set_random_seed(seed)
+    run_dir = Path(run_dir).resolve()
+    (run_dir / 'models').mkdir(parents=True, exist_ok=True)
+    (run_dir / 'logs').mkdir(parents=True, exist_ok=True)
+    train_dataset = torch.load(train_path, map_location='cpu', weights_only=False)
+    test_dataset = torch.load(test_path, map_location='cpu', weights_only=False)
+    x0, y0 = train_dataset[0]
+    N_grid, N_beta = tuple(x0.shape[:3]), int(y0.shape[0])
+    if len(x0.shape) != 4 or x0.shape[-1] != 3 or N_beta != 18:
+        raise ValueError("Expected channels-last maps and 18 beta components")
+    if test_dataset[0][0].shape != x0.shape:
+        raise ValueError("Training and test grid shapes differ")
+    if min(N_grid) < 8:
+        raise ValueError("Each cropped grid dimension must be >= 8 for three pooling layers")
+    print("N_grid=", N_grid, "N_beta=", N_beta)
+    model = get_model_01(N_grid=N_grid, N_beta=N_beta)
+    model.summary()
+    model.compile(
+        optimizer=keras.optimizers.Adam(learning_rate=schedule[0]['lr'], clipnorm=clipnorm),
+        loss="mse", metrics=["mae", R2Score()],
     )
+    tensorboard = TensorboardCallback(
+        log_dir=str(run_dir / 'logs' / datetime.now().strftime('tb_%Y%m%d_%H%M%S')))
+    # One checkpoint object across phases retains the best validation loss.
+    checkpoint = keras.callbacks.ModelCheckpoint(
+        filepath=str(run_dir / 'models' / 'best-model.keras'), monitor='val_loss',
+        mode='min', save_best_only=True, verbose=1)
+    callbacks = [tensorboard, checkpoint]
+    if save_each_epoch:
+        callbacks.append(keras.callbacks.ModelCheckpoint(
+            filepath=str(run_dir / 'models' / '{epoch:03d}.keras'),
+            save_freq='epoch', verbose=0))
+    callbacks.extend([
+        keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss', mode='min', factor=reduce_lr_factor,
+            patience=reduce_lr_patience, min_lr=min_lr, verbose=1),
+        keras.callbacks.EarlyStopping(
+            monitor='val_loss', mode='min', patience=early_stopping_patience,
+            restore_best_weights=True, verbose=1),
+    ])
+    initial_epoch = 0
+    try:
+        for phase in schedule:
+            train_loader = DataLoader(
+                dataset=train_dataset, batch_size=phase['batch_size'],
+                shuffle=shuffle_train, num_workers=0, pin_memory=torch.cuda.is_available(),
+                drop_last=False)
+            test_loader = DataLoader(
+                dataset=test_dataset, batch_size=phase['batch_size'],
+                shuffle=False, num_workers=0, pin_memory=torch.cuda.is_available(),
+                drop_last=False)
+            model.optimizer.learning_rate.assign(phase['lr'])
+            history = model.fit(
+                train_loader, initial_epoch=initial_epoch,
+                epochs=initial_epoch + phase['epochs'], validation_data=test_loader,
+                callbacks=callbacks, shuffle=False)
+            initial_epoch += len(history.epoch)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        model.save(run_dir / 'final_model.keras')
+    finally:
+        tensorboard.writer.close()
+    return run_dir / 'models' / 'best-model.keras'
 
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
-model.save("final_model.keras")
-
-###########################################################################
-
-
-
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--train-path', default='../train_CNN_small.p')
+    parser.add_argument('--test-path', default='../test_CNN_small.p')
+    parser.add_argument('--run-dir', default='.')
+    args = parser.parse_args()
+    train_model(**vars(args))

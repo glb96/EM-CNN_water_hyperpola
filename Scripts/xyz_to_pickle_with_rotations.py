@@ -110,7 +110,8 @@ def _clean(x):
 
 
 def xyz_to_pickle(input_xyz: str, output_p: Optional[str],
-                  rotation_output: Optional[str] = None) -> None:
+                  rotation_output: Optional[str] = None,
+                  water_charges=(-0.820, 0.410, 0.410)) -> None:
     """output_p=None permits rotation-only recovery for an existing dataset.
 
     rotation_output=None (default): original behavior, no rotation file.
@@ -122,6 +123,9 @@ def xyz_to_pickle(input_xyz: str, output_p: Optional[str],
         raise ValueError('Input XYZ, dataset and rotation output must have distinct paths')
     if output_p is None and rotation_output is None:
         raise ValueError('No output requested')
+    water_charges = np.asarray(water_charges, dtype=np.float64)
+    if water_charges.shape != (3,) or not np.isfinite(water_charges).all():
+        raise ValueError("water_charges must contain three finite O,H,H charges")
     all_conformations: Dict[Any, Any] = {}
     matrices, betas = [], []
     T_steps = 0
@@ -153,7 +157,7 @@ def xyz_to_pickle(input_xyz: str, output_p: Optional[str],
         if output_p is not None:
             coords_mol = rotate_positions(coords_trans, R)
             env_positions = coords_mol[3:, :].reshape(-1, 3, 3)
-            env_charges = np.tile(np.array([-0.820, 0.410, 0.410], dtype=np.float64),
+            env_charges = np.tile(water_charges,
                                   (len(env_positions), 1))
             all_conformations[(t, 0)] = {
                 'pos_mol_interest': _clean(coords_mol[:3, :].copy()),

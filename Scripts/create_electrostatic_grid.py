@@ -84,7 +84,8 @@ def crop_grid_to_minimal_shape(X, Y, Z, maskgrid):
     return X_cropped, Y_cropped, Z_cropped, maskgrid_cropped
 
 def refine_grid_according_to_atomic_position(atom_treshold, pos_mol_interest, X, Y, Z):
-    maskgrid = np.zeros((N_grid[0], N_grid[1], N_grid[2]))
+    N_grid = X.shape
+    maskgrid = np.zeros(N_grid)
     for i in range(len(atom_treshold)):
         threshold = atom_treshold[i]
         pos = pos_mol_interest[i]
@@ -120,7 +121,7 @@ def create_grid(N_grid, L_bond_grid):
 def create_grid_for_water(LL_conformation,  N_grid, L_bond_grid, L_size_atom):
     # initialization of the grid     
     pos_mol_interest = LL_conformation['pos_mol_interest']
-    atoms = LL_conformation['atoms']
+    atoms = list(LL_conformation['atoms'])
     atom_treshold = []
     for i in range(len(atoms)):
         myatom = atoms[i]
@@ -201,7 +202,8 @@ def built_electrostatic_potential(X, Y, Z, env_positions_mol, env_charges, field
     my_grid = np.zeros((3, N_grid[0], N_grid[1], N_grid[2]))
 
     if maskgrid is None:
-        maskgrid = np.zeros((N_grid[0], N_grid[1], N_grid[2])) + 1 # all true
+        N_grid = X.shape
+    maskgrid = np.zeros(N_grid) + 1 # all true
  
     if L_size_atom['max_wrt_grid'] is not None: 
         max_wrt_grid = L_size_atom['max_wrt_grid']
@@ -358,7 +360,9 @@ def process_t_n(args):
 # Globals for multiprocessing workers
 _G = {}
 
-def _init_worker(X, Y, Z, maskgrid, L_size_atom, LL_all_conformation):
+def _init_worker(X, Y, Z, maskgrid, L_size_atom, LL_all_conformation, smoothing):
+    global smoothing_factor
+    smoothing_factor = smoothing
     _G["X"] = X
     _G["Y"] = Y
     _G["Z"] = Z
@@ -368,7 +372,7 @@ def _init_worker(X, Y, Z, maskgrid, L_size_atom, LL_all_conformation):
  
 ###########################################################################
 
-def build_inputs_for_ML_parr(name_data_set, N_grid, L_bond_grid, L_size_atom, T_steps, N_molecule, num_processes):
+def build_inputs_for_ML_parr(name_data_set, N_grid, L_bond_grid, L_size_atom, T_steps, N_molecule, num_processes, reference_configuration=None):
     with open(name_data_set, "rb") as filetoload:
         LL_all_conformation = pickle.load(filetoload)
 
@@ -384,7 +388,8 @@ def build_inputs_for_ML_parr(name_data_set, N_grid, L_bond_grid, L_size_atom, T_
         if T_steps > LL_all_conformation["T_steps"]:
             raise Exception("T_steps too large! max value:", LL_all_conformation["T_steps"])
 
-    N_grid, X, Y, Z, maskgrid = create_grid_for_water(LL_all_conformation[(0, 0)], N_grid, L_bond_grid, L_size_atom)
+    reference = LL_all_conformation[(0, 0)] if reference_configuration is None else reference_configuration
+    N_grid, X, Y, Z, maskgrid = create_grid_for_water(reference, N_grid, L_bond_grid, L_size_atom)
     L_XYZ_grid = [X, Y, Z]
 
     N_config = T_steps * N_molecule
@@ -397,7 +402,7 @@ def build_inputs_for_ML_parr(name_data_set, N_grid, L_bond_grid, L_size_atom, T_
     with multiprocessing.Pool(
         processes=num_processes,
         initializer=_init_worker,
-        initargs=(X, Y, Z, maskgrid, L_size_atom, LL_all_conformation),
+        initargs=(X, Y, Z, maskgrid, L_size_atom, LL_all_conformation, smoothing_factor),
     ) as pool:
         results = pool.map(process_t_n, all_args)
 
@@ -416,55 +421,44 @@ def build_inputs_for_ML_parr(name_data_set, N_grid, L_bond_grid, L_size_atom, T_
 ###########################################################################
 ###########################################################################
 
-if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser(description="Build electrostatic grids and save as pickle")
-    parser.add_argument("name_data_set", type=str, help="Input pickle (.p) containing configurations")
-    parser.add_argument("name_for_save", type=str, help="Output pickle (.p) for electrostatic maps")
-
-    args = parser.parse_args()
-
-    # Example usage
-    T_steps = -1
-    N_molecule = -1
-
-    num_processes = 32
-
-    name_data_set = args.name_data_set
-    name_for_save = args.name_for_save
-
-    # Example grid parameters
-    N_grid = (int(size_grid), int(size_grid), int(size_grid))  # (N_x, N_y, N_z)
-    L_bond_grid = ((-6, 6), (-6, 6), (-6, 6))
-    L_size_atom = {}
-    L_size_atom["H1"] = 0.8 + size_atom 
-    L_size_atom["H2"] = 0.8 + size_atom
-    L_size_atom["O"] = 1.0 + size_atom
-    L_size_atom["mean"] = 1.1 + size_atom
-    L_size_atom["max_wrt_grid"] = 0.075
-
-    fields_tensor, betas_tensor, L_XYZ_grid = build_inputs_for_ML_parr(
-        name_data_set,
-        N_grid,
-        L_bond_grid,
-        L_size_atom,
-        T_steps,
-        N_molecule,
-        num_processes,
+def generate_maps(*, input_path, output_path, grid_points=35, box_half_width=6.0,
+                  mask_extension=2.4, smoothing=0.6, workers=1,
+                  reference_configuration=None):
+    """Generate one split; reuse the training reference for an identical mask/grid."""
+    global smoothing_factor
+    if (grid_points < 2 or workers < 1 or not np.isfinite(
+            [box_half_width, mask_extension, smoothing]).all()
+            or box_half_width <= 0 or mask_extension < 0 or smoothing <= 0):
+        raise ValueError("Invalid grid, smoothing, mask, or worker parameters")
+    smoothing_factor = float(smoothing)
+    N_grid = (grid_points,) * 3
+    bounds = ((-box_half_width, box_half_width),) * 3
+    radii = {"H1": 0.8 + mask_extension, "H2": 0.8 + mask_extension,
+             "O": 1.0 + mask_extension, "mean": 1.1 + mask_extension,
+             "max_wrt_grid": 0.075}
+    fields, betas, coordinates = build_inputs_for_ML_parr(
+        name_data_set=str(input_path), N_grid=N_grid, L_bond_grid=bounds,
+        L_size_atom=radii, T_steps=-1, N_molecule=-1, num_processes=workers,
+        reference_configuration=reference_configuration,
     )
+    payload = dict(name_data_set=str(input_path), N_grid=fields.shape[2:],
+                   L_bond_grid=bounds, L_XYZ_grid=coordinates, L_size_atom=radii,
+                   T_steps=-1, N_molecule=-1, fields_tensor=fields,
+                   betas_tensor=betas, smoothing_factor=smoothing)
+    with open(output_path, "wb") as handle:
+        pickle.dump(payload, handle)
+    print("Saved:", output_path)
+    return tuple(fields.shape[2:])
 
-    LL_data_set_field = {}
-    LL_data_set_field["name_data_set"] = name_data_set
-    LL_data_set_field["N_grid"] = np.shape(fields_tensor)[2:]
-    LL_data_set_field["L_bond_grid"] = L_bond_grid
-    LL_data_set_field["L_XYZ_grid"] = L_XYZ_grid
-    LL_data_set_field["L_size_atom"] = L_size_atom
-    LL_data_set_field["T_steps"] = T_steps
-    LL_data_set_field["N_molecule"] = N_molecule
-    LL_data_set_field["fields_tensor"] = fields_tensor
-    LL_data_set_field["betas_tensor"] = betas_tensor
 
-    with open(name_for_save, "wb") as f:
-        pickle.dump(LL_data_set_field, f)
-
-    print(" Saved:", name_for_save)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate molecular electric-field maps")
+    parser.add_argument("input_path")
+    parser.add_argument("output_path")
+    parser.add_argument("--grid-points", type=int, default=size_grid)
+    parser.add_argument("--box-half-width", type=float, default=6.0)
+    parser.add_argument("--mask-extension", type=float, default=size_atom)
+    parser.add_argument("--smoothing", type=float, default=smoothing_factor)
+    parser.add_argument("--workers", type=int, default=1)
+    args = parser.parse_args()
+    generate_maps(**vars(args))

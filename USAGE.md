@@ -297,11 +297,3 @@ python Example/run_cnn.py --evaluate-only
 ```
 
 For a brief CPU execution check on a small input subset, prepare that subset with `--input-dir`, then run `run_cnn.py --allow-cpu --smoke-test` with the corresponding `--prepared-dir` and a fresh `--run-dir`. This performs one epoch and evaluation; it is not a benchmark or a substitute for the full schedule.
-
-## 9. Files to keep and cleanup
-
-All **six Python modules in `Scripts/`** have a role in this workflow. `augment_validation_rotations.py` transforms metadata while `eval_labo.py` evaluates tensors; these are complementary, not duplicates. The old slow `built_electrostatic_potential` function inside the grid module is not called by this workflow; the fast field implementation is used instead.
-
-The legacy `submit_*.sh` files are not used and may be removed from the repository. They are site-specific; in the old version `submit_prepare_data.sh` repeats grid generation and resubmits itself, and `submit_eval_labo.sh` refers to a different filename. Use the two execution examples instead.
-
-For further experiments, keep the prepared datasets together with their normalization, rotation metadata, and settings. Keep trained model weights with those settings as well. Raw `.p`, map `.p`, and visualization files under the per-split preparation directories are useful for inspection but are not read by `run_cnn.py` once preparation is complete. The bundled example pickle files can also be regenerated from the XYZ files.

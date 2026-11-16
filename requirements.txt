@@ -1,0 +1,6 @@
+# Install the appropriate CPU/GPU PyTorch build first; see USAGE.md.
+numpy>=1.24
+torch>=2.2
+keras>=3,<4
+psutil
+tensorboard

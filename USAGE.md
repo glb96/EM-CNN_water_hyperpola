@@ -14,16 +14,14 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 ```
 
-On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1` instead.
-
-Install PyTorch using the command appropriate to your operating system and GPU from the [official PyTorch installation selector](https://pytorch.org/get-started/locally/). Then, from the repository root:
+Install PyTorch using the command appropriate to your operating system and GPU from the [official PyTorch installation selector](https://pytorch.org/get-started/locally/). To check the installation and the available GPU:
 
 ```bash
 python -m pip install -r requirements.txt
 python -c "import torch; print('PyTorch:', torch.__version__); print('GPU available:', torch.cuda.is_available())"
 ```
 
-Training uses [Keras 3 with the PyTorch backend](https://keras.io/getting_started/). The scripts select this backend before importing Keras. TensorFlow and fidle are not required by this version of the workflow. On a cluster, activate your environment within your own GPU allocation; no scheduler directives are assumed here.
+Training uses [Keras 3 with the PyTorch backend](https://keras.io/getting_started/). The scripts select this backend before importing Keras. On a cluster, activate your environment within your own GPU allocation; no scheduler directives are assumed here.
 
 The requirements specify broad compatibility bounds rather than reproducing a frozen historical environment. A small end-to-end CPU execution check was performed with Python 3.12, NumPy 2.3.5, PyTorch 2.15.0+cpu, Keras 3.15.1, and TensorBoard 2.21.0. This verifies execution, not full training convergence or GPU performance.
 
@@ -62,7 +60,7 @@ The `.p` and rotation files already in `Example/` illustrate the intermediate fo
 
 ## 3. Understand the XYZ input
 
-This is the essential input contract for using your own configurations. Each frame describes **one target water molecule and its explicit environment**, with its reference tensor. A simulation snapshot is not automatically expanded into one sample per water molecule.
+This is the essential input contract for using your own configurations. Each frame describes **one target water molecule and its explicit environment**, with its reference tensor. A simulation snapshot **is not** automatically expanded into one sample per water molecule.
 
 A multi-frame XYZ consists of successive blocks:
 
@@ -76,7 +74,7 @@ A multi-frame XYZ consists of successive blocks:
 | 4–6 | First surrounding water, in **O H H** order. |
 | 7–9, etc. | Further surrounding waters, each in **O H H** order. |
 
-The first target hydrogen is H1 and the second is H2. Their order defines the molecular frame and must remain consistent. Every environment triplet is checked. The reader expects at least six atoms, with `(number of atoms - 3)` divisible by three. Additional atom columns and unrelated header fields are ignored.
+The first target hydrogen is H1 and the second is H2. Their order defines the molecular frame. Every environment triplet is checked. The reader expects at least six atoms, with `(number of atoms - 3)` divisible by three. Additional atom columns and unrelated header fields are ignored.
 
 Coordinates are in **angstroms in the laboratory frame**. Supply whole water molecules and the appropriate periodic images around the target. The reader does not reconstruct periodic boundaries, choose a neighbor cutoff, or read charges from XYZ columns. A different environment definition can change the field and the predictions.
 
